@@ -1,0 +1,14 @@
+{
+  "name": "Claude文字起こし",
+  "short_name": "文字起こし",
+  "description": "長時間の会話を文字起こしし、Claudeで整形・要約するアプリ",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f6f7f8",
+  "theme_color": "#0f766e",
+  "lang": "ja",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

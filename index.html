@@ -1,0 +1,302 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Claude文字起こし</title>
+<meta name="description" content="スマホで使える長時間対応の文字起こしアプリ（Claudeで整形・要約）">
+<meta name="theme-color" content="#0f766e">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="文字起こし">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon.svg">
+<style>
+:root{
+  --bg:#f6f7f8; --surface:#ffffff; --surface-2:#eef1f3; --text:#14181c; --muted:#5d6670;
+  --line:#dde2e6; --accent:#0f766e; --accent-ink:#ffffff; --accent-soft:#d6efec;
+  --rec:#dc2626; --rec-soft:#fde2e2; --warn-bg:#fff4d6; --warn-ink:#7a5300;
+  --radius:14px; --shadow:0 1px 2px rgba(0,0,0,.06),0 4px 16px rgba(0,0,0,.05);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#0e1113; --surface:#171b1e; --surface-2:#20262a; --text:#e8ecef; --muted:#9aa4ad;
+    --line:#2b3237; --accent:#2dd4bf; --accent-ink:#06201d; --accent-soft:#11302c;
+    --rec:#f87171; --rec-soft:#3a1717; --warn-bg:#3a2f12; --warn-ink:#ffd889;
+    --shadow:none;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0e1113; --surface:#171b1e; --surface-2:#20262a; --text:#e8ecef; --muted:#9aa4ad;
+  --line:#2b3237; --accent:#2dd4bf; --accent-ink:#06201d; --accent-soft:#11302c;
+  --rec:#f87171; --rec-soft:#3a1717; --warn-bg:#3a2f12; --warn-ink:#ffd889; --shadow:none;
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--text);font:16px/1.65 system-ui,-apple-system,"Hiragino Sans","Noto Sans JP",sans-serif;
+  padding-bottom:env(safe-area-inset-bottom);-webkit-text-size-adjust:100%}
+button,input,select,textarea{font:inherit;color:inherit}
+button{cursor:pointer;border:1px solid var(--line);background:var(--surface);border-radius:10px;padding:10px 14px;min-height:44px}
+button:disabled{opacity:.5;cursor:default}
+button.primary{background:var(--accent);color:var(--accent-ink);border-color:transparent;font-weight:600}
+button.danger{background:var(--rec);color:#fff;border-color:transparent;font-weight:600}
+button.ghost{background:transparent;border-color:transparent}
+button.small{min-height:36px;padding:6px 10px;font-size:14px}
+input,select,textarea{width:100%;background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+textarea{resize:vertical}
+.bar{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:8px;padding:calc(8px + env(safe-area-inset-top)) 12px 8px;
+  background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
+.bar h1{flex:1;margin:0;font-size:17px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bar button{min-width:44px;padding:8px}
+main{max-width:720px;margin:0 auto;padding:16px}
+h2{font-size:14px;color:var(--muted);font-weight:600;margin:24px 0 8px;letter-spacing:.04em}
+.hint{color:var(--muted);font-size:13px;margin:8px 0}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow)}
+.banner{padding:12px 14px;border-radius:12px;background:var(--warn-bg);color:var(--warn-ink);margin-bottom:12px;font-size:14px}
+.banner .row{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap}
+.rec-big{width:100%;min-height:72px;font-size:19px;font-weight:700;background:var(--rec);color:#fff;border:none;border-radius:18px;
+  display:flex;align-items:center;justify-content:center;gap:10px}
+.rec-big .d{width:14px;height:14px;border-radius:50%;background:#fff}
+.list{list-style:none;margin:0;padding:0;display:grid;gap:8px}
+.list li button{width:100%;text-align:left;display:block;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px 14px}
+.list .t{font-weight:600;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.list .m{font-size:13px;color:var(--muted)}
+.tag{display:inline-block;font-size:11px;padding:1px 7px;border-radius:99px;background:var(--surface-2);color:var(--muted);margin-left:6px;vertical-align:1px}
+.tag.warn{background:var(--warn-bg);color:var(--warn-ink)}
+.tag.ok{background:var(--accent-soft);color:var(--accent)}
+.empty{color:var(--muted);text-align:center;padding:24px 0;font-size:14px}
+
+.rec-head{display:flex;align-items:center;gap:10px;padding:14px 16px}
+.rec-head .dot{width:12px;height:12px;border-radius:50%;background:var(--rec);animation:pulse 1.4s infinite}
+.rec-head.paused .dot{animation:none;background:var(--muted)}
+@keyframes pulse{50%{opacity:.25}}
+@media (prefers-reduced-motion: reduce){.rec-head .dot{animation:none}}
+.rec-head .state{font-weight:700}
+.rec-head .time{margin-left:auto;font-variant-numeric:tabular-nums;font-size:22px;font-weight:700}
+.meta{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:13px;color:var(--muted)}
+.rec-meta{padding:0 16px 12px}
+.transcript{padding:12px 16px;min-height:40vh;max-height:56vh;overflow-y:auto;border-top:1px solid var(--line);overscroll-behavior:contain}
+.seg{margin:0 0 8px;display:flex;gap:10px}
+.seg time{flex:none;font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums;padding-top:3px;min-width:44px}
+.interim{color:var(--muted)}
+.rec-controls{display:grid;grid-template-columns:1fr 1.4fr;gap:10px;margin-top:14px}
+.rec-controls button{min-height:56px;font-size:16px}
+.warnline{font-size:13px;color:var(--warn-ink);background:var(--warn-bg);padding:8px 12px;border-radius:10px;margin-top:10px}
+
+.title-input{font-size:18px;font-weight:700;border-color:transparent;background:transparent;padding:6px 0}
+.title-input:focus{border-color:var(--line);background:var(--surface);padding:6px 10px}
+.tabs{display:flex;gap:4px;overflow-x:auto;margin:14px 0 10px;padding:4px;background:var(--surface-2);border-radius:12px;scrollbar-width:none}
+.tabs button{flex:1;border:none;background:transparent;min-height:38px;padding:6px 10px;font-size:14px;white-space:nowrap;border-radius:9px;color:var(--muted)}
+.tabs button[aria-selected="true"]{background:var(--surface);color:var(--text);font-weight:700;box-shadow:var(--shadow)}
+.panel{padding:14px 16px}
+.panel .toolbar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;align-items:center}
+.out{white-space:pre-wrap;word-break:break-word}
+.md h3{font-size:16px;margin:16px 0 6px}
+.md h4{font-size:15px;margin:12px 0 4px}
+.md ul,.md ol{padding-left:1.3em;margin:4px 0}
+.md p{margin:6px 0}
+.progress{font-size:13px;color:var(--accent);margin-bottom:8px}
+.qa{border-top:1px solid var(--line);padding-top:10px;margin-top:10px}
+.qa .q{font-weight:700}
+.bk{display:flex;align-items:center;gap:8px;padding:10px 0;border-bottom:1px solid var(--line);font-size:14px}
+.bk span{flex:1}
+.actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:16px}
+.actions .wide{grid-column:1/-1}
+
+dialog{border:none;border-radius:18px;padding:0;width:min(560px,calc(100vw - 24px));max-height:calc(100dvh - 40px);background:var(--surface);color:var(--text)}
+dialog::backdrop{background:rgba(0,0,0,.45)}
+.dlg{padding:18px}
+.dlg h3{margin:0 0 12px;font-size:18px}
+.field{margin-bottom:14px}
+.field label{display:block;font-size:13px;font-weight:600;margin-bottom:4px}
+.field .hint{margin:4px 0 0}
+.check{display:flex;gap:10px;align-items:center}
+.check input{width:22px;height:22px}
+.dlg .row{display:flex;gap:8px;justify-content:flex-end;margin-top:8px;flex-wrap:wrap}
+.stack{display:grid;gap:8px}
+#toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom));transform:translateX(-50%);background:var(--text);color:var(--bg);
+  padding:10px 16px;border-radius:99px;font-size:14px;opacity:0;pointer-events:none;transition:opacity .2s;max-width:calc(100vw - 32px);z-index:20}
+#toast.show{opacity:1}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<header class="bar">
+  <button id="backBtn" class="ghost" aria-label="戻る" hidden>
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M15 18l-6-6 6-6"/></svg>
+  </button>
+  <h1 id="barTitle">Claude文字起こし</h1>
+  <button id="settingsBtn" class="ghost" aria-label="設定">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+  </button>
+</header>
+
+<main>
+  <!-- ホーム -->
+  <section id="view-home">
+    <div id="recoverBanner" class="banner" hidden></div>
+    <div id="supportBanner" class="banner" hidden></div>
+    <button id="newRecBtn" class="rec-big"><span class="d"></span>録音を開始</button>
+    <p class="hint">話した内容はその場で端末に保存され、<span id="hintBackup">3</span>分ごとにバックアップが更新されます。</p>
+    <h2>保存した記録</h2>
+    <ul id="sessionList" class="list"></ul>
+  </section>
+
+  <!-- 録音中 -->
+  <section id="view-rec" hidden>
+    <div class="card">
+      <div class="rec-head" id="recHead">
+        <span class="dot"></span><span class="state" id="recState">録音中</span>
+        <span class="time" id="recTime">00:00:00</span>
+      </div>
+      <div class="meta rec-meta">
+        <span id="recChars">0文字</span>
+        <span id="recSaved">保存: -</span>
+        <span id="recBackup">バックアップ: -</span>
+        <span id="recAudio"></span>
+      </div>
+      <div class="transcript" id="liveText"><p class="interim" id="interim"></p></div>
+    </div>
+    <div id="recWarn" class="warnline" hidden></div>
+    <div class="rec-controls">
+      <button id="pauseBtn">一時停止</button>
+      <button id="stopBtn" class="danger">停止して保存</button>
+    </div>
+    <p class="hint">画面は自動で点灯したままになります。アプリを切り替えたり画面を消したりすると、文字起こしが止まる場合があります。</p>
+  </section>
+
+  <!-- 詳細 -->
+  <section id="view-detail" hidden>
+    <input id="titleInput" class="title-input" aria-label="タイトル">
+    <div class="meta" id="detailMeta"></div>
+    <nav class="tabs" role="tablist">
+      <button role="tab" data-tab="raw" aria-selected="true">原文</button>
+      <button role="tab" data-tab="clean">整形</button>
+      <button role="tab" data-tab="summary">要約</button>
+      <button role="tab" data-tab="ask">質問</button>
+      <button role="tab" data-tab="backup">バックアップ</button>
+    </nav>
+    <div class="card">
+      <div class="panel" data-panel="raw">
+        <div class="toolbar"><button class="small" data-copy="raw">コピー</button></div>
+        <div id="rawOut"></div>
+      </div>
+      <div class="panel" data-panel="clean" hidden>
+        <div class="toolbar">
+          <button class="small primary" id="cleanBtn">Claudeで整形</button>
+          <button class="small" id="cleanStop" hidden>中止</button>
+          <button class="small" data-copy="clean">コピー</button>
+        </div>
+        <p class="hint">句読点・段落・話者の区切りを付け、「えー」「あのー」などを取り除きます。長い記録は分割して順に処理し、途中で止まっても続きから再開できます。</p>
+        <div class="progress" id="cleanProgress"></div>
+        <div class="out" id="cleanOut"></div>
+      </div>
+      <div class="panel" data-panel="summary" hidden>
+        <div class="toolbar">
+          <select id="summaryKind" style="width:auto">
+            <option value="minutes">議事録</option>
+            <option value="summary">要点まとめ</option>
+            <option value="todo">ToDo抽出</option>
+          </select>
+          <button class="small primary" id="summaryBtn">Claudeで作成</button>
+          <button class="small" id="summaryStop" hidden>中止</button>
+          <button class="small" data-copy="summary">コピー</button>
+        </div>
+        <div class="progress" id="summaryProgress"></div>
+        <div class="md" id="summaryOut"></div>
+      </div>
+      <div class="panel" data-panel="ask" hidden>
+        <div class="stack">
+          <textarea id="askInput" rows="2" placeholder="例：決まった日程は？ 〇〇さんの意見は？"></textarea>
+          <div class="toolbar" style="margin:0"><button class="small primary" id="askBtn">質問する</button></div>
+        </div>
+        <div id="qaOut"></div>
+      </div>
+      <div class="panel" data-panel="backup" hidden>
+        <p class="hint">録音中は一定間隔で自動的にスナップショットを保存しています。誤って消した・上書きした場合は、その時点に戻せます。</p>
+        <div class="toolbar"><button class="small" id="backupNowBtn">今すぐバックアップ</button></div>
+        <div id="backupList"></div>
+      </div>
+    </div>
+    <div class="actions">
+      <button class="primary wide" id="resumeBtn">続きを録音</button>
+      <button id="exportTxtBtn">テキスト保存</button>
+      <button id="shareBtn">共有</button>
+      <button id="exportAudioBtn">音声を保存</button>
+      <button id="deleteBtn" style="color:var(--rec)">削除</button>
+    </div>
+  </section>
+</main>
+
+<dialog id="settingsDlg">
+  <form method="dialog" class="dlg" id="settingsForm">
+    <h3>設定</h3>
+    <div class="field">
+      <label for="sKey">Claude APIキー</label>
+      <input id="sKey" type="password" autocomplete="off" placeholder="sk-ant-...">
+      <p class="hint">整形・要約・質問に使います。キーはこの端末内だけに保存されます。録音と文字起こしはキーなしで使えます。</p>
+    </div>
+    <div class="field">
+      <label for="sModel">モデル</label>
+      <select id="sModel">
+        <option value="claude-opus-5-5">Claude Opus 5.5（高精度）</option>
+        <option value="claude-sonnet-5-5">Claude Sonnet 5.5（バランス）</option>
+        <option value="claude-haiku-5-5">Claude Haiku 5.5（高速・低コスト）</option>
+      </select>
+    </div>
+    <div class="field">
+      <label for="sEffort">考える深さ（effort）</label>
+      <select id="sEffort">
+        <option value="low">low（速い）</option>
+        <option value="medium">medium</option>
+        <option value="high">high（丁寧）</option>
+      </select>
+    </div>
+    <div class="field">
+      <label for="sLang">認識する言語</label>
+      <select id="sLang">
+        <option value="ja-JP">日本語</option>
+        <option value="en-US">英語</option>
+      </select>
+    </div>
+    <div class="field">
+      <label for="sBackup">自動バックアップの間隔</label>
+      <select id="sBackup">
+        <option value="1">1分ごと</option>
+        <option value="3">3分ごと</option>
+        <option value="5">5分ごと</option>
+        <option value="10">10分ごと</option>
+      </select>
+    </div>
+    <div class="field">
+      <label for="sKeep">記録ごとに残すバックアップ数</label>
+      <select id="sKeep">
+        <option value="5">5件</option>
+        <option value="10">10件</option>
+        <option value="30">30件</option>
+      </select>
+    </div>
+    <div class="field">
+      <label class="check"><input type="checkbox" id="sAudio"> 音声も保存する</label>
+      <p class="hint">1時間で約15〜30MB。端末によっては音声保存と文字起こしを同時に行えないため、文字起こしが止まる場合はオフにしてください。</p>
+    </div>
+    <div class="field">
+      <label>データ</label>
+      <div class="stack">
+        <button type="button" id="exportAllBtn">全データを書き出す（JSON）</button>
+        <button type="button" id="importBtn">書き出したファイルから復元</button>
+        <input type="file" id="importFile" accept="application/json,.json" hidden>
+      </div>
+      <p class="hint" id="storageInfo"></p>
+    </div>
+    <div class="row">
+      <button value="cancel" formnovalidate>閉じる</button>
+      <button value="save" class="primary" id="settingsSave">保存</button>
+    </div>
+  </form>
+</dialog>
+
+<div id="toast" role="status" aria-live="polite"></div>
+<script type="module" src="app.js"></script>
+</body>
+</html>
