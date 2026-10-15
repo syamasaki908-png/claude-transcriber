@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Claude文字起こし</title>
-<meta name="description" content="スマホで使える長時間対応の文字起こしアプリ（Claudeで整形・要約）">
+<meta name="description" content="スマホで文字起こしし、Claudeアプリで議事録・要約を作るアプリ">
 <meta name="theme-color" content="#0f766e">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="文字起こし">
@@ -96,6 +96,15 @@ h2{font-size:14px;color:var(--muted);font-weight:600;margin:24px 0 8px;letter-sp
 .md ul,.md ol{padding-left:1.3em;margin:4px 0}
 .md p{margin:6px 0}
 .progress{font-size:13px;color:var(--accent);margin-bottom:8px}
+a.btn{display:flex;align-items:center;justify-content:center;min-height:48px;border-radius:10px;text-decoration:none;font-weight:600}
+a.btn.primary{background:var(--accent);color:var(--accent-ink)}
+.steps{margin:0;padding-left:1.4em;display:grid;gap:18px}
+.steps li::marker{color:var(--accent);font-weight:700}
+.step-title{display:block;font-weight:700;margin-bottom:6px}
+.result{border-bottom:1px solid var(--line);padding:10px 0 4px}
+.result:last-child{border-bottom:none}
+.result-head{display:flex;justify-content:space-between;gap:8px;align-items:baseline}
+.result .toolbar{margin:6px 0 0}
 .qa{border-top:1px solid var(--line);padding-top:10px;margin-top:10px}
 .qa .q{font-weight:700}
 .bk{display:flex;align-items:center;gap:8px;padding:10px 0;border-bottom:1px solid var(--line);font-size:14px}
@@ -171,46 +180,62 @@ dialog::backdrop{background:rgba(0,0,0,.45)}
     <div class="meta" id="detailMeta"></div>
     <nav class="tabs" role="tablist">
       <button role="tab" data-tab="raw" aria-selected="true">原文</button>
-      <button role="tab" data-tab="clean">整形</button>
-      <button role="tab" data-tab="summary">要約</button>
-      <button role="tab" data-tab="ask">質問</button>
+      <button role="tab" data-tab="claude">Claude</button>
+      <button role="tab" data-tab="results" id="resultsTab">結果</button>
       <button role="tab" data-tab="backup">バックアップ</button>
     </nav>
     <div class="card">
       <div class="panel" data-panel="raw">
-        <div class="toolbar"><button class="small" data-copy="raw">コピー</button></div>
+        <div class="toolbar"><button class="small" id="copyRawBtn">コピー</button></div>
         <div id="rawOut"></div>
       </div>
-      <div class="panel" data-panel="clean" hidden>
-        <div class="toolbar">
-          <button class="small primary" id="cleanBtn">Claudeで整形</button>
-          <button class="small" id="cleanStop" hidden>中止</button>
-          <button class="small" data-copy="clean">コピー</button>
-        </div>
-        <p class="hint">句読点・段落・話者の区切りを付け、「えー」「あのー」などを取り除きます。長い記録は分割して順に処理し、途中で止まっても続きから再開できます。</p>
-        <div class="progress" id="cleanProgress"></div>
-        <div class="out" id="cleanOut"></div>
+      <div class="panel" data-panel="claude" hidden>
+        <ol class="steps">
+          <li>
+            <label for="purpose" class="step-title">Claudeに頼むこと</label>
+            <select id="purpose">
+              <option value="minutes">議事録</option>
+              <option value="summary">要点まとめ</option>
+              <option value="todo">ToDo抽出</option>
+              <option value="clean">読みやすく整形</option>
+              <option value="ask">質問する</option>
+            </select>
+            <div id="askWrap" hidden style="margin-top:8px">
+              <textarea id="askInput" rows="2" placeholder="例：決まった日程は？ 〇〇さんの意見は？"></textarea>
+            </div>
+            <div id="partWrap" hidden style="margin-top:8px">
+              <select id="partSel"></select>
+              <p class="hint">長い記録は整形結果が途中で切れないよう、パートごとに送ります。</p>
+            </div>
+          </li>
+          <li>
+            <span class="step-title">Claudeアプリに送る</span>
+            <div class="stack">
+              <a id="openClaudeBtn" class="btn primary" href="https://claude.ai/new" target="_blank" rel="noopener">コピーしてClaudeを開く</a>
+              <button id="shareClaudeBtn">ファイルで送る（共有 → Claude）</button>
+            </div>
+            <p class="hint">「コピーしてClaudeを開く」は、指示文と文字起こしをコピーしてClaudeを開きます。入力欄を長押しして貼り付け、送信してください。</p>
+          </li>
+          <li>
+            <span class="step-title">Claudeの回答を保存（任意）</span>
+            <p class="hint" style="margin-top:0">回答のコピーボタンでコピーし、ここに貼り付けると記録と一緒に保存・バックアップされます。</p>
+            <textarea id="resultInput" rows="4" placeholder="Claudeの回答を貼り付け"></textarea>
+            <div class="toolbar" style="margin-top:8px">
+              <select id="resultKind" style="width:auto">
+                <option value="minutes">議事録</option>
+                <option value="summary">要点まとめ</option>
+                <option value="todo">ToDo抽出</option>
+                <option value="clean">読みやすく整形</option>
+                <option value="ask">質問する</option>
+              </select>
+              <button class="small" id="pasteBtn">貼り付け</button>
+              <button class="small primary" id="saveResultBtn">保存</button>
+            </div>
+          </li>
+        </ol>
       </div>
-      <div class="panel" data-panel="summary" hidden>
-        <div class="toolbar">
-          <select id="summaryKind" style="width:auto">
-            <option value="minutes">議事録</option>
-            <option value="summary">要点まとめ</option>
-            <option value="todo">ToDo抽出</option>
-          </select>
-          <button class="small primary" id="summaryBtn">Claudeで作成</button>
-          <button class="small" id="summaryStop" hidden>中止</button>
-          <button class="small" data-copy="summary">コピー</button>
-        </div>
-        <div class="progress" id="summaryProgress"></div>
-        <div class="md" id="summaryOut"></div>
-      </div>
-      <div class="panel" data-panel="ask" hidden>
-        <div class="stack">
-          <textarea id="askInput" rows="2" placeholder="例：決まった日程は？ 〇〇さんの意見は？"></textarea>
-          <div class="toolbar" style="margin:0"><button class="small primary" id="askBtn">質問する</button></div>
-        </div>
-        <div id="qaOut"></div>
+      <div class="panel" data-panel="results" hidden>
+        <div id="resultsOut"></div>
       </div>
       <div class="panel" data-panel="backup" hidden>
         <p class="hint">録音中は一定間隔で自動的にスナップショットを保存しています。誤って消した・上書きした場合は、その時点に戻せます。</p>
@@ -231,27 +256,6 @@ dialog::backdrop{background:rgba(0,0,0,.45)}
 <dialog id="settingsDlg">
   <form method="dialog" class="dlg" id="settingsForm">
     <h3>設定</h3>
-    <div class="field">
-      <label for="sKey">Claude APIキー</label>
-      <input id="sKey" type="password" autocomplete="off" placeholder="sk-ant-...">
-      <p class="hint">整形・要約・質問に使います。キーはこの端末内だけに保存されます。録音と文字起こしはキーなしで使えます。</p>
-    </div>
-    <div class="field">
-      <label for="sModel">モデル</label>
-      <select id="sModel">
-        <option value="claude-opus-5-5">Claude Opus 5.5（高精度）</option>
-        <option value="claude-sonnet-5-5">Claude Sonnet 5.5（バランス）</option>
-        <option value="claude-haiku-5-5">Claude Haiku 5.5（高速・低コスト）</option>
-      </select>
-    </div>
-    <div class="field">
-      <label for="sEffort">考える深さ（effort）</label>
-      <select id="sEffort">
-        <option value="low">low（速い）</option>
-        <option value="medium">medium</option>
-        <option value="high">high（丁寧）</option>
-      </select>
-    </div>
     <div class="field">
       <label for="sLang">認識する言語</label>
       <select id="sLang">

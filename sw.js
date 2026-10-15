@@ -1,5 +1,5 @@
 // アプリ本体をキャッシュし、電波が弱い場所でも起動・録音できるようにする（通信できるときは常に最新を取得）
-const CACHE = "ct-v1";
+const CACHE = "ct-v2";
 const ASSETS = ["./", "./index.html", "./app.js", "./manifest.webmanifest", "./icon.svg"];
 
 self.addEventListener("install", (e) => {

@@ -1,12 +1,11 @@
-// Claude文字起こし — 端末の音声認識で文字起こしし、Claude で整形・要約・質問応答を行う PWA
+// Claude文字起こし — 端末の音声認識で文字起こしし、Claude アプリに渡して整形・要約・質問応答を行う PWA
 // 保存方針: 確定した文はすぐ IndexedDB に保存し、一定間隔でスナップショット（バックアップ）を別ストアに積む。
 
-const SDK_URL = "https://cdn.jsdelivr.net/npm/@anthropic-ai/sdk@0.128.0/+esm";
 const $ = (id) => document.getElementById(id);
 
 /* ---------------- 設定 ---------------- */
 const DEFAULTS = {
-  apiKey: "", model: "claude-opus-5-5", effort: "medium", lang: "ja-JP",
+  lang: "ja-JP",
   backupMin: 3, keepBackups: 10, recordAudio: true,
 };
 let settings = loadSettings();
@@ -145,7 +144,7 @@ function newSession() {
   return {
     id: uid(), title: `${dateLabel(now)} の記録`, createdAt: now, updatedAt: now,
     durationMs: 0, status: "recording", segments: [], audioChunks: 0, audioRuns: 0,
-    clean: { parts: [], segCount: 0, done: false }, summary: { kind: "", text: "" }, qa: [],
+    results: [],
     lastBackupAt: null,
   };
 }
@@ -372,172 +371,149 @@ document.addEventListener("visibilitychange", () => {
 window.addEventListener("pagehide", () => { if (R.active) saveNow(); });
 window.addEventListener("beforeunload", (e) => { if (R.active) { saveNow(); e.preventDefault(); e.returnValue = ""; } });
 
-/* ---------------- Claude ---------------- */
-let sdkPromise;
-async function claudeStream({ system, content, onText, signal, maxTokens = 32000 }) {
-  if (!settings.apiKey) throw new Error("設定で Claude APIキーを入力してください");
-  sdkPromise ??= import(SDK_URL);
-  const { default: Anthropic } = await sdkPromise;
-  const client = new Anthropic({ apiKey: settings.apiKey, dangerouslyAllowBrowser: true });
-  const params = {
-    model: settings.model,
-    max_tokens: maxTokens,
-    system,
-    messages: [{ role: "user", content }],
-    output_config: { effort: settings.effort },
-  };
-  // 安全判定で断られた場合にサーバー側で別モデルに引き継ぐ（Haiku は非対応）
-  if (settings.model !== "claude-haiku-5-5") {
-    params.betas = ["server-side-fallback-2026-07-01"];
-    params.fallbacks = "default";
-  }
-  const stream = client.beta.messages.stream(params, { signal });
-  stream.on("text", (delta) => onText?.(delta));
-  const msg = await stream.finalMessage();
-  if (msg.stop_reason === "refusal") throw new Error("Claude がこの内容の処理を辞退しました");
-  return msg;
-}
-function claudeError(e) {
-  if (e?.name === "AbortError" || /abort/i.test(e?.message || "")) return "中止しました";
-  const st = e?.status;
-  if (st === 401) return "APIキーが正しくありません";
-  if (st === 429) return "利用上限に達しました。少し待ってから再実行してください";
-  if (st >= 500) return "Claude 側が混み合っています。少し待ってから再実行してください";
-  if (e instanceof TypeError) return "通信できませんでした。電波状況を確認してください";
-  return e?.message || "エラーが発生しました";
-}
+/* ---------------- Claude アプリ連携 ---------------- */
+// API は使わず、指示文と文字起こしをコピー（または共有）して、ふだん使っている Claude アプリに渡す。
+const PURPOSES = {
+  minutes: {
+    label: "議事録",
+    prompt: `この会話の議事録を作成してください。見出しは「概要」「話し合われたこと」「決定事項」「ToDo」「要確認事項」とし、該当がない見出しには「なし」と書いてください。ToDo には担当者・期限が会話中にあれば併記してください。会話にない内容は補わないでください。`,
+  },
+  summary: {
+    label: "要点まとめ",
+    prompt: `この会話の要点を、重要な順に5〜10個の箇条書きでまとめてください。最初に1〜2文の全体要約を書いてください。会話にない内容は補わないでください。`,
+  },
+  todo: {
+    label: "ToDo抽出",
+    prompt: `この会話から、誰かがやると言ったこと・頼まれたこと・次回までの宿題を漏れなく抽出し、「- [担当] 内容（期限）」の形式で箇条書きにしてください。担当や期限が不明なら「不明」と書いてください。該当がなければ「なし」とだけ書いてください。`,
+  },
+  clean: {
+    label: "読みやすく整形",
+    prompt: `この文字起こしを読みやすく整えてください。
+- 句読点を付け、話題のまとまりごとに段落に分ける。各段落の先頭にはその段落の最初のタイムスタンプ [mm:ss] を残す。
+- 「えー」「あのー」などのフィラーや言い直しの重複を取り除く。
+- 誤認識は、文脈から正しい語が確実にわかる場合だけ直す。
+- 話し手の交代が明らかな場合は「話者A：」「話者B：」のように示す。
+- 要約・追加・削除はせず、整形後の本文だけを出力する。`,
+  },
+  ask: { label: "質問する", prompt: "" },
+};
+const PART_CHARS = 12000; // 整形は回答が長くなるため、この文字数ごとに分けて渡す
 
-const CLEAN_SYSTEM = `あなたは音声認識の文字起こしを読みやすく整える編集者です。
-入力は端末の音声認識による会話の文字起こしで、句読点がなく、誤認識を含みます。各行の先頭の [mm:ss] は経過時間です。
-次の方針で整形し、整形後の本文だけを出力してください。
-- 句読点を付け、話題のまとまりごとに段落に分ける。各段落の先頭に、その段落の最初の行のタイムスタンプ [mm:ss] を残す。
-- 「えー」「あのー」「まあ」などのフィラーと、言い直しによる重複を取り除く。
-- 誤認識は、文脈から正しい語が確実にわかる場合だけ直す。自信がなければ原文のままにする。
-- 話し手の交代が文脈から明らかな場合は「話者A：」「話者B：」のように示す。不明なら付けない。
-- 内容を要約・追加・削除しない。言われていないことを書かない。`;
-
-function chunkSegments(segments, maxChars = 3500) {
-  const chunks = [];
+function transcriptParts(s) {
+  const parts = [];
   let cur = [], len = 0;
-  for (const g of segments) {
+  for (const g of s.segments) {
     const line = `[${stamp(g.t)}] ${g.text}`;
-    if (len + line.length > maxChars && cur.length) { chunks.push(cur.join("\n")); cur = []; len = 0; }
+    if (len + line.length > PART_CHARS && cur.length) { parts.push(cur.join("\n")); cur = []; len = 0; }
     cur.push(line);
     len += line.length + 1;
   }
-  if (cur.length) chunks.push(cur.join("\n"));
-  return chunks;
+  if (cur.length) parts.push(cur.join("\n"));
+  return parts;
 }
 
-let cleanAbort = null;
-async function runClean() {
-  const s = cur;
-  if (!s.segments.length) return toast("文字起こしがまだありません");
-  // 文字起こしが増えていれば最初からやり直し、同じなら続きから再開する
-  if (s.clean.segCount !== s.segments.length) s.clean = { parts: [], segCount: s.segments.length, done: false };
-  const chunks = chunkSegments(s.segments);
-  cleanAbort = new AbortController();
-  setBusy("clean", true);
-  try {
-    for (let i = s.clean.parts.length; i < chunks.length; i++) {
-      $("cleanProgress").textContent = `整形中… ${i + 1} / ${chunks.length}`;
-      const prev = s.clean.parts.at(-1)?.slice(-400) || "";
-      const content = (prev ? `直前の整形済みの末尾（文脈・話者ラベルを揃えるための参考。出力に含めない）:\n${prev}\n\n---\n` : "")
-        + `整形する文字起こし（${i + 1}/${chunks.length}）:\n${chunks[i]}`;
-      let acc = "";
-      const base = s.clean.parts.join("\n\n");
-      await claudeStream({
-        system: CLEAN_SYSTEM, content, signal: cleanAbort.signal,
-        onText: (d) => { acc += d; $("cleanOut").textContent = (base ? base + "\n\n" : "") + acc; },
-      });
-      s.clean.parts.push(acc.trim());
-      await persist(s);
-    }
-    s.clean.done = true;
-    await persist(s);
-    await snapshot(s, "clean");
-    await idbPut("sessions", s);
-    $("cleanProgress").textContent = "";
-    toast("整形が完了しました");
-  } catch (e) {
-    $("cleanProgress").textContent = `${claudeError(e)}（もう一度押すと続きから再開します）`;
-  } finally {
-    setBusy("clean", false);
-    renderClean();
+function buildPrompt(s) {
+  const kind = $("purpose").value;
+  const head = `以下は「${s.title}」（${dateLabel(s.createdAt)}、録音 ${hms(s.durationMs)}）の会話を、スマホの音声認識で文字起こししたものです。句読点がなく、誤認識を含みます。行頭の [mm:ss] は経過時間です。`;
+  if (kind === "ask") {
+    const q = $("askInput").value.trim();
+    if (!q) { toast("質問を入力してください"); return null; }
+    return `${head}\n記録に書かれていることだけを根拠に、次の質問に答えてください。該当箇所にはタイムスタンプを添え、記録から分からないことは「記録からは分かりません」と答えてください。\n\n質問: ${q}\n\n<transcript>\n${rawText(s)}\n</transcript>`;
   }
-}
-
-const SUMMARY_PROMPTS = {
-  minutes: `以下の会話の議事録を作成してください。見出しは「## 概要」「## 話し合われたこと」「## 決定事項」「## ToDo」「## 要確認事項」とし、該当がない見出しには「なし」と書いてください。ToDo には担当者・期限が会話中にあれば併記してください。会話にない内容を補わないでください。`,
-  summary: `以下の会話の要点を、重要な順に5〜10個の箇条書きでまとめてください。最初に1〜2文の全体要約を書いてください。会話にない内容を補わないでください。`,
-  todo: `以下の会話から、誰かがやると言ったこと・頼まれたこと・次回までの宿題を漏れなく抽出し、「- [担当] 内容（期限）」の形式で箇条書きにしてください。担当や期限が不明なら「不明」と書いてください。該当がなければ「なし」とだけ書いてください。`,
-};
-function sourceText(s) {
-  return s.clean.done && s.clean.segCount === s.segments.length ? s.clean.parts.join("\n\n") : rawText(s);
-}
-
-let summaryAbort = null;
-async function runSummary() {
-  const s = cur;
-  if (!s.segments.length) return toast("文字起こしがまだありません");
-  const kind = $("summaryKind").value;
-  summaryAbort = new AbortController();
-  setBusy("summary", true);
-  $("summaryProgress").textContent = "作成中…";
-  let acc = "";
-  try {
-    await claudeStream({
-      system: "あなたは会議や会話の記録を正確にまとめるアシスタントです。文字起こしは音声認識由来で誤認識を含む可能性があります。",
-      content: `${SUMMARY_PROMPTS[kind]}\n\n<transcript>\n${sourceText(s)}\n</transcript>`,
-      signal: summaryAbort.signal,
-      onText: (d) => { acc += d; $("summaryOut").innerHTML = md(acc); },
-    });
-    s.summary = { kind, text: acc.trim(), at: Date.now() };
-    await persist(s);
-    await snapshot(s, "summary");
-    await idbPut("sessions", s);
-    $("summaryProgress").textContent = "";
-  } catch (e) {
-    $("summaryProgress").textContent = claudeError(e);
-  } finally {
-    setBusy("summary", false);
+  if (kind === "clean") {
+    const parts = transcriptParts(s);
+    const i = Number($("partSel").value) || 0;
+    const note = parts.length > 1 ? `\n（長いため ${parts.length} 回に分けて送ります。これはパート ${i + 1}/${parts.length} です。）` : "";
+    return `${head}\n\n${PURPOSES.clean.prompt}${note}\n\n<transcript>\n${parts[i]}\n</transcript>`;
   }
+  return `${head}\n\n${PURPOSES[kind].prompt}\n\n<transcript>\n${rawText(s)}\n</transcript>`;
 }
 
-async function runAsk() {
-  const s = cur;
-  const q = $("askInput").value.trim();
-  if (!q) return;
-  if (!s.segments.length) return toast("文字起こしがまだありません");
-  $("askBtn").disabled = true;
-  const item = { q, a: "", at: Date.now() };
-  s.qa.unshift(item);
-  renderQa();
+function promptLabel() {
+  const kind = $("purpose").value;
+  const parts = kind === "clean" ? transcriptParts(cur) : [];
+  return PURPOSES[kind].label + (parts.length > 1 ? `（パート${Number($("partSel").value) + 1}）` : "");
+}
+
+// ユーザー操作の中で同期的にコピーする（iPhone はクリック直後でないとコピーできないため）
+function copyNow(text) {
   try {
-    await claudeStream({
-      system: "あなたは会話の記録について質問に答えるアシスタントです。記録に書かれていることだけを根拠に、簡潔に日本語で答えてください。該当箇所があればタイムスタンプ [mm:ss] を添えてください。記録から分からないことは「記録からは分かりません」と答えてください。",
-      // 記録部分はキャッシュし、同じ記録への2回目以降の質問を安く速くする
-      content: [
-        { type: "text", text: `<transcript>\n${sourceText(s)}\n</transcript>`, cache_control: { type: "ephemeral" } },
-        { type: "text", text: `質問: ${q}` },
-      ],
-      maxTokens: 8000,
-      onText: (d) => { item.a += d; renderQa(); },
-    });
-    $("askInput").value = "";
-  } catch (e) {
-    item.a = `（${claudeError(e)}）`;
-  } finally {
-    $("askBtn").disabled = false;
-    renderQa();
-    await persist(s);
-  }
+    const ta = Object.assign(document.createElement("textarea"), { value: text, readOnly: true });
+    ta.style.cssText = "position:fixed;top:0;left:0;opacity:0";
+    document.body.append(ta);
+    ta.select();
+    ta.setSelectionRange(0, text.length);
+    const ok = document.execCommand("copy");
+    ta.remove();
+    if (ok) return true;
+  } catch {}
+  navigator.clipboard?.writeText(text).catch(() => {});
+  return !!navigator.clipboard;
 }
 
-function setBusy(kind, on) {
-  $(`${kind}Btn`).disabled = on;
-  $(`${kind}Stop`).hidden = !on;
+function onPurposeChange() {
+  const kind = $("purpose").value;
+  $("askWrap").hidden = kind !== "ask";
+  const parts = kind === "clean" && cur ? transcriptParts(cur) : [];
+  $("partWrap").hidden = parts.length < 2;
+  $("partSel").innerHTML = parts.map((_, i) => `<option value="${i}">パート ${i + 1} / ${parts.length}</option>`).join("");
+  $("resultKind").value = kind;
 }
+
+/* ---------------- 結果の保存 ---------------- */
+function migrate(s) {
+  // 旧版（API版）で保存した整形・要約・質問を「Claudeの結果」に移す
+  s.results ??= [];
+  if (s.summary?.text) s.results.push({ kind: s.summary.kind || "summary", label: PURPOSES[s.summary.kind]?.label || "要約", text: s.summary.text, at: s.summary.at || s.updatedAt });
+  if (s.clean?.parts?.length) s.results.push({ kind: "clean", label: "整形", text: s.clean.parts.join("\n\n"), at: s.updatedAt });
+  for (const x of s.qa || []) if (x.a) s.results.push({ kind: "ask", label: `質問：${x.q}`, text: x.a, at: x.at });
+  delete s.summary; delete s.clean; delete s.qa;
+  return s;
+}
+
+async function saveResult() {
+  const text = $("resultInput").value.trim();
+  if (!text) return toast("Claudeの回答を貼り付けてください");
+  const kind = $("resultKind").value;
+  const q = kind === "ask" ? $("askInput").value.trim() : "";
+  cur.results.unshift({ kind, label: q ? `質問：${q}` : PURPOSES[kind].label, text, at: Date.now() });
+  await persist(cur);
+  await snapshot(cur, "result");
+  await persist(cur);
+  $("resultInput").value = "";
+  renderResults();
+  renderBackups();
+  selectTab("results");
+  toast("保存しました");
+}
+
+function renderResults() {
+  const box = $("resultsOut");
+  $("resultsTab").textContent = cur.results.length ? `結果 (${cur.results.length})` : "結果";
+  if (!cur.results.length) {
+    box.innerHTML = `<p class="empty">まだありません。「Claude」タブで回答を貼り付けて保存すると、ここに残ります。</p>`;
+    return;
+  }
+  box.innerHTML = "";
+  cur.results.forEach((r, i) => {
+    const el = document.createElement("div");
+    el.className = "result";
+    el.innerHTML = `<div class="result-head"><strong></strong><span class="hint">${dateLabel(r.at)}</span></div><div class="md">${md(r.text)}</div>
+      <div class="toolbar"><button class="small" data-a="copy">コピー</button><button class="small" data-a="del">削除</button></div>`;
+    el.querySelector("strong").textContent = r.label;
+    el.querySelector('[data-a="copy"]').onclick = async () => {
+      try { await navigator.clipboard.writeText(r.text); toast("コピーしました"); } catch { toast("コピーできませんでした"); }
+    };
+    el.querySelector('[data-a="del"]').onclick = async () => {
+      if (!confirm(`「${r.label}」を削除しますか？（バックアップには残ります）`)) return;
+      cur.results.splice(i, 1);
+      await persist(cur);
+      renderResults();
+    };
+    box.append(el);
+  });
+}
+
 async function persist(s) {
   s.updatedAt = Date.now();
   await idbPut("sessions", s);
@@ -562,8 +538,8 @@ async function renderHome() {
   ul.innerHTML = all.length ? "" : `<li class="empty">まだ記録はありません</li>`;
   for (const s of all) {
     const li = document.createElement("li");
-    const tag = s.status === "interrupted" ? `<span class="tag warn">中断</span>`
-      : s.summary?.text ? `<span class="tag ok">要約済</span>` : s.clean?.done ? `<span class="tag ok">整形済</span>` : "";
+    const n = (s.results?.length || 0) + (s.summary?.text ? 1 : 0);
+    const tag = s.status === "interrupted" ? `<span class="tag warn">中断</span>` : n ? `<span class="tag ok">Claude結果 ${n}</span>` : "";
     li.innerHTML = `<button><span class="t"></span><span class="m">${hms(s.durationMs)} ・ ${charCount(s).toLocaleString()}文字${tag}</span></button>`;
     li.querySelector(".t").textContent = s.title;
     li.firstChild.onclick = () => openDetail(s.id);
@@ -584,44 +560,28 @@ async function renderHome() {
 async function openDetail(id) {
   cur = await idbGet("sessions", id);
   if (!cur) return renderHome();
-  cur.clean ??= { parts: [], segCount: 0, done: false };
-  cur.summary ??= { kind: "", text: "" };
-  cur.qa ??= [];
+  if (!cur.results || cur.summary || cur.clean || cur.qa) { migrate(cur); await persist(cur); }
   showView("detail");
   $("titleInput").value = cur.title;
   $("detailMeta").innerHTML = `<span>${dateLabel(cur.createdAt)}</span><span>${hms(cur.durationMs)}</span><span>${charCount(cur).toLocaleString()}文字</span>`
     + (cur.audioChunks ? `<span>音声あり</span>` : "");
   $("exportAudioBtn").disabled = !cur.audioChunks;
   $("shareBtn").hidden = !navigator.share;
+  $("shareClaudeBtn").hidden = !navigator.share;
   $("rawOut").innerHTML = cur.segments.length
     ? cur.segments.map((g) => `<p class="seg"><time>${stamp(g.t)}</time><span>${esc(g.text)}</span></p>`).join("")
     : `<p class="empty">文字起こしはありません</p>`;
-  renderClean();
-  $("summaryOut").innerHTML = cur.summary.text ? md(cur.summary.text) : "";
-  if (cur.summary.kind) $("summaryKind").value = cur.summary.kind;
-  $("cleanProgress").textContent = "";
-  $("summaryProgress").textContent = "";
-  renderQa();
+  $("resultInput").value = "";
+  $("askInput").value = "";
+  onPurposeChange();
+  renderResults();
   renderBackups();
-  selectTab("raw");
+  selectTab(cur.segments.length ? "claude" : "raw");
 }
 
-function renderClean() {
-  const c = cur.clean;
-  const stale = c.parts.length && c.segCount !== cur.segments.length;
-  $("cleanOut").textContent = c.parts.join("\n\n");
-  $("cleanBtn").textContent = c.done && !stale ? "整形し直す" : c.parts.length && !stale ? "続きから整形" : "Claudeで整形";
-  if (stale) $("cleanProgress").textContent = "録音が追加されたため、整形し直すと最新の内容になります";
-  if (c.done && !stale && $("cleanBtn").textContent === "整形し直す") {
-    $("cleanBtn").onclick = () => { cur.clean = { parts: [], segCount: 0, done: false }; runClean(); };
-  } else $("cleanBtn").onclick = runClean;
-}
-function renderQa() {
-  $("qaOut").innerHTML = cur.qa.map((x) => `<div class="qa"><div class="q">Q. ${esc(x.q)}</div><div class="out">${esc(x.a || "考え中…")}</div></div>`).join("");
-}
 async function renderBackups() {
   const list = (await idbByIndex("backups", cur.id)).sort((a, b) => b.savedAt - a.savedAt);
-  const label = { auto: "自動", start: "開始時", stop: "停止時", clean: "整形後", summary: "要約後", manual: "手動", restore: "復元前" };
+  const label = { auto: "自動", start: "開始時", stop: "停止時", result: "結果保存後", manual: "手動", restore: "復元前", clean: "整形後", summary: "要約後" };
   const box = $("backupList");
   box.innerHTML = list.length ? "" : `<p class="empty">バックアップはまだありません</p>`;
   for (const b of list) {
@@ -647,8 +607,7 @@ function selectTab(name) {
 
 function sessionText(s) {
   const parts = [`${s.title}`, `${dateLabel(s.createdAt)} ／ 録音時間 ${hms(s.durationMs)}`, ""];
-  if (s.summary?.text) parts.push("■ 要約", s.summary.text, "");
-  if (s.clean?.parts?.length) parts.push("■ 整形済み", s.clean.parts.join("\n\n"), "");
+  for (const r of s.results || []) parts.push(`■ ${r.label}`, r.text, "");
   parts.push("■ 文字起こし（原文）", rawText(s));
   return parts.join("\n");
 }
@@ -669,9 +628,6 @@ async function audioBlobs(s) {
 
 /* ---------------- 設定ダイアログ ---------------- */
 async function openSettings() {
-  $("sKey").value = settings.apiKey;
-  $("sModel").value = settings.model;
-  $("sEffort").value = settings.effort;
   $("sLang").value = settings.lang;
   $("sBackup").value = String(settings.backupMin);
   $("sKeep").value = String(settings.keepBackups);
@@ -689,8 +645,8 @@ $("settingsDlg").addEventListener("close", () => {
   if ($("settingsDlg").returnValue !== "save") return;
   settings = {
     ...settings,
-    apiKey: $("sKey").value.trim(), model: $("sModel").value, effort: $("sEffort").value, lang: $("sLang").value,
-    backupMin: Number($("sBackup").value), keepBackups: Number($("sKeep").value), recordAudio: $("sAudio").checked,
+    lang: $("sLang").value, backupMin: Number($("sBackup").value),
+    keepBackups: Number($("sKeep").value), recordAudio: $("sAudio").checked,
   };
   storeSettings();
   $("hintBackup").textContent = settings.backupMin;
@@ -699,7 +655,7 @@ $("settingsDlg").addEventListener("close", () => {
 
 async function exportAll() {
   const sessions = await idbAll("sessions");
-  const blob = new Blob([JSON.stringify({ app: "claude-transcriber", version: 1, exportedAt: Date.now(), sessions }, null, 1)], { type: "application/json" });
+  const blob = new Blob([JSON.stringify({ app: "claude-transcriber", version: 2, exportedAt: Date.now(), sessions }, null, 1)], { type: "application/json" });
   const d = new Date();
   download(blob, `transcriber-backup-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}.json`);
 }
@@ -729,7 +685,7 @@ async function importFile(file) {
 $("newRecBtn").onclick = () => startRecording();
 $("pauseBtn").onclick = togglePause;
 $("stopBtn").onclick = stopRecording;
-$("backBtn").onclick = () => { cleanAbort?.abort(); summaryAbort?.abort(); renderHome(); };
+$("backBtn").onclick = renderHome;
 $("settingsBtn").onclick = openSettings;
 $("exportAllBtn").onclick = exportAll;
 $("importBtn").onclick = () => $("importFile").click();
@@ -740,10 +696,34 @@ $("titleInput").onchange = async () => {
   cur.title = $("titleInput").value.trim() || cur.title;
   await persist(cur);
 };
-$("cleanStop").onclick = () => cleanAbort?.abort();
-$("summaryBtn").onclick = runSummary;
-$("summaryStop").onclick = () => summaryAbort?.abort();
-$("askBtn").onclick = runAsk;
+$("purpose").onchange = onPurposeChange;
+
+// 「Claudeアプリで開く」は本物のリンク。押した瞬間にコピーし、そのままリンク先（Claude）を開く
+$("openClaudeBtn").onclick = (e) => {
+  if (!cur.segments.length) { e.preventDefault(); return toast("文字起こしがまだありません"); }
+  const text = buildPrompt(cur);
+  if (!text) { e.preventDefault(); return; }
+  if (copyNow(text)) toast("コピーしました。Claudeの入力欄に貼り付けて送信してください", 5000);
+  else { e.preventDefault(); toast("コピーできませんでした。「ファイルで送る」をお試しください", 5000); }
+};
+$("shareClaudeBtn").onclick = async () => {
+  if (!cur.segments.length) return toast("文字起こしがまだありません");
+  const text = buildPrompt(cur);
+  if (!text) return;
+  const file = new File([text], `${safeName(cur.title)}_${promptLabel()}.txt`, { type: "text/plain" });
+  try {
+    if (navigator.canShare?.({ files: [file] })) await navigator.share({ files: [file], title: cur.title });
+    else await navigator.share({ title: cur.title, text });
+    toast("共有先で Claude を選び、そのまま送信してください", 5000);
+  } catch {}
+};
+$("pasteBtn").onclick = async () => {
+  try {
+    $("resultInput").value = await navigator.clipboard.readText();
+    if (!$("resultInput").value) toast("クリップボードが空です");
+  } catch { toast("貼り付けできませんでした。入力欄を長押しして貼り付けてください"); }
+};
+$("saveResultBtn").onclick = saveResult;
 $("backupNowBtn").onclick = async () => { await snapshot(cur, "manual"); await persist(cur); renderBackups(); toast("バックアップしました"); };
 $("resumeBtn").onclick = () => startRecording(cur);
 $("exportTxtBtn").onclick = () => download(new Blob([sessionText(cur)], { type: "text/plain;charset=utf-8" }), `${safeName(cur.title)}.txt`);
@@ -767,13 +747,9 @@ $("deleteBtn").onclick = async () => {
   toast("削除しました");
   renderHome();
 };
-document.querySelectorAll("[data-copy]").forEach((b) => {
-  b.onclick = async () => {
-    const kind = b.dataset.copy;
-    const text = kind === "raw" ? rawText(cur) : kind === "clean" ? cur.clean.parts.join("\n\n") : cur.summary.text;
-    try { await navigator.clipboard.writeText(text); toast("コピーしました"); } catch { toast("コピーできませんでした"); }
-  };
-});
+$("copyRawBtn").onclick = async () => {
+  try { await navigator.clipboard.writeText(rawText(cur)); toast("コピーしました"); } catch { toast("コピーできませんでした"); }
+};
 
 /* ---------------- 起動 ---------------- */
 (async function init() {
