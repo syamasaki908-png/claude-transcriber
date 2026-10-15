@@ -5,7 +5,7 @@ const $ = (id) => document.getElementById(id);
 
 /* ---------------- 設定 ---------------- */
 const DEFAULTS = {
-  lang: "ja-JP",
+  lang: "ja-JP", tokkiUrl: "",
   backupMin: 3, keepBackups: 10, recordAudio: true,
 };
 let settings = loadSettings();
@@ -316,7 +316,7 @@ async function stopRecording() {
   await saveNow();
   await periodicBackup("stop");
   R.session = null;
-  toast("保存しました");
+  toast(settings.tokkiUrl ? "保存しました。「特記メモに送る」で取込欄に渡せます" : "保存しました", 4000);
   openDetail(s.id);
 }
 
@@ -571,6 +571,7 @@ async function openDetail(id) {
   $("rawOut").innerHTML = cur.segments.length
     ? cur.segments.map((g) => `<p class="seg"><time>${stamp(g.t)}</time><span>${esc(g.text)}</span></p>`).join("")
     : `<p class="empty">文字起こしはありません</p>`;
+  renderSend();
   $("resultInput").value = "";
   $("askInput").value = "";
   onPurposeChange();
@@ -628,6 +629,7 @@ async function audioBlobs(s) {
 
 /* ---------------- 設定ダイアログ ---------------- */
 async function openSettings() {
+  $("sTokki").value = settings.tokkiUrl;
   $("sLang").value = settings.lang;
   $("sBackup").value = String(settings.backupMin);
   $("sKeep").value = String(settings.keepBackups);
@@ -645,11 +647,12 @@ $("settingsDlg").addEventListener("close", () => {
   if ($("settingsDlg").returnValue !== "save") return;
   settings = {
     ...settings,
-    lang: $("sLang").value, backupMin: Number($("sBackup").value),
+    tokkiUrl: validUrl($("sTokki").value), lang: $("sLang").value, backupMin: Number($("sBackup").value),
     keepBackups: Number($("sKeep").value), recordAudio: $("sAudio").checked,
   };
   storeSettings();
   $("hintBackup").textContent = settings.backupMin;
+  if (cur && !$("view-detail").hidden) renderSend();
   toast("設定を保存しました");
 });
 
@@ -749,6 +752,29 @@ $("deleteBtn").onclick = async () => {
 };
 $("copyRawBtn").onclick = async () => {
   try { await navigator.clipboard.writeText(rawText(cur)); toast("コピーしました"); } catch { toast("コピーできませんでした"); }
+};
+
+/* ---------------- 特記メモへの受け渡し ---------------- */
+// 別サイト（claude.ai のアーティファクト）の入力欄へ直接は書き込めないため、コピーしてから開き、取込欄に貼り付けてもらう
+function validUrl(v) {
+  v = (v || "").trim();
+  try { return new URL(v).protocol === "https:" ? v : ""; } catch { return ""; }
+}
+const plainText = (s) => s.segments.map((g) => g.text).join("\n");
+function renderSend() {
+  $("sendCard").hidden = !cur.segments.length;
+  $("sendTokkiBtn").href = settings.tokkiUrl || "#";
+}
+$("sendTokkiBtn").onclick = (e) => {
+  if (!settings.tokkiUrl) {
+    e.preventDefault();
+    toast("先に設定で「送り先：特記メモのURL」を入力してください", 4000);
+    openSettings();
+    return;
+  }
+  e.currentTarget.href = settings.tokkiUrl; // 設定を変えた直後でも最新の送り先を開く
+  if (copyNow(plainText(cur))) toast("コピーしました。特記メモの「文字起こし取込」に貼り付けてください", 5000);
+  else { e.preventDefault(); toast("コピーできませんでした。原文タブの「コピー」をお使いください", 5000); }
 };
 
 /* ---------------- 起動 ---------------- */

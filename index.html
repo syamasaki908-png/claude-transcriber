@@ -105,6 +105,8 @@ a.btn.primary{background:var(--accent);color:var(--accent-ink)}
 .result:last-child{border-bottom:none}
 .result-head{display:flex;justify-content:space-between;gap:8px;align-items:baseline}
 .result .toolbar{margin:6px 0 0}
+.send{padding:12px;margin-top:12px}
+.send .hint{margin:8px 0 0}
 .qa{border-top:1px solid var(--line);padding-top:10px;margin-top:10px}
 .qa .q{font-weight:700}
 .bk{display:flex;align-items:center;gap:8px;padding:10px 0;border-bottom:1px solid var(--line);font-size:14px}
@@ -178,6 +180,10 @@ dialog::backdrop{background:rgba(0,0,0,.45)}
   <section id="view-detail" hidden>
     <input id="titleInput" class="title-input" aria-label="タイトル">
     <div class="meta" id="detailMeta"></div>
+    <div class="send card" id="sendCard">
+      <a id="sendTokkiBtn" class="btn primary" href="#" target="_blank" rel="noopener">特記メモに送る（文字起こし取込）</a>
+      <p class="hint" id="sendHint">文字起こしをコピーして特記メモを開きます。「文字起こし取込」を押し、入力欄を長押しして貼り付けてください。</p>
+    </div>
     <nav class="tabs" role="tablist">
       <button role="tab" data-tab="raw" aria-selected="true">原文</button>
       <button role="tab" data-tab="claude">Claude</button>
@@ -256,6 +262,11 @@ dialog::backdrop{background:rgba(0,0,0,.45)}
 <dialog id="settingsDlg">
   <form method="dialog" class="dlg" id="settingsForm">
     <h3>設定</h3>
+    <div class="field">
+      <label for="sTokki">送り先：特記メモのURL</label>
+      <input id="sTokki" type="url" inputmode="url" autocomplete="off" placeholder="https://claude.ai/artifact/...">
+      <p class="hint">「特記メモに送る」で開くページです。特記メモのアドレスを一度だけ貼り付けてください。</p>
+    </div>
     <div class="field">
       <label for="sLang">認識する言語</label>
       <select id="sLang">
